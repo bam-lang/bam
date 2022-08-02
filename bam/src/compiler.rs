@@ -8,13 +8,9 @@ use crate::{syntax::Value, vm::SharedStream, Builtin, Machine, Program, Statemen
 #[derive(Copy, Clone)]
 pub struct Handle(u32);
 
-/// SSA-like symbol holding a [`Value`].
-#[derive(Copy, Clone)]
-pub struct Symbol(u32);
-
 /// Global handle to a [`Unit`].
 #[derive(Copy, Clone)]
-pub struct Number(u32);
+pub struct Symbol(u32);
 
 /// Compiled version of a stream.
 pub enum Flow {
@@ -29,7 +25,7 @@ pub enum Flow {
     /// Consume from the underlying stream without changing it.
     Peek(Handle),
     /// Run a unit with a stream.
-    Pipe(Handle, Number),
+    Pipe(Handle, Symbol),
     /// Builtin operations.
     Exec(Handle, Builtin),
     /// Projection into a tuple value.
@@ -96,13 +92,10 @@ impl Renamer {
 /// Compiler context, and also compiled code representation.
 pub struct Code {
     /// Collected units, correspond to machines.
-    units: Vec<Unit>,
+    /// Alongside their respective name contexts.
+    units: Vec<(Unit, Renamer)>,
     /// Symbol renamer.
     symbols: Renamer,
-    /// Handle renamer.
-    handles: Renamer,
-    /// Number renamer.
-    numbers: Renamer,
 }
 
 impl Code {
@@ -111,24 +104,7 @@ impl Code {
         Code {
             units: Vec::new(),
             symbols: Renamer::new(),
-            handles: Renamer::new(),
-            numbers: Renamer::new(),
         }
-    }
-
-    /// Fresh number.
-    pub fn number(&mut self) -> Number {
-        Number(self.numbers.fresh())
-    }
-
-    /// Fresh handle.
-    pub fn handle(&mut self) -> Handle {
-        Handle(self.handles.fresh())
-    }
-
-    /// Fresh symbol.
-    pub fn symbol(&mut self) -> Symbol {
-        Symbol(self.symbols.fresh())
     }
 
     /// Transform a syntax tree into a mostly flat representation.
@@ -140,7 +116,7 @@ impl Code {
 
     /// Transform a machine into a unit.
     pub fn transform_machine(&mut self, body: Vec<Statement>, result: Stream) {
-        self.units.push(Unit::new());
+        self.units.push((Unit::new(), Renamer::new()));
 
         for stmt in body {
             self.transform_statement(stmt);
@@ -157,13 +133,13 @@ impl Code {
             Statement::Let(mut names, stream) => {
                 if names.len() == 1 {
                     let name = names.pop().unwrap();
-                    let handle = Handle(self.handles.bind(name));
+                    let handle = self.bind_flow(name);
                     self.transform_stream_with(stream, handle);
                 } else {
-                    let tuple = self.handle();
+                    let tuple = self.fresh_handle();
                     self.transform_stream_with(stream, tuple);
                     for (index, name) in names.into_iter().enumerate() {
-                        let handle = Handle(self.handles.bind(name));
+                        let handle = self.bind_flow(name);
                         self.add_instr(Instr::Make(handle, Flow::Proj(tuple, index)))
                     }
                 }
@@ -179,7 +155,7 @@ impl Code {
     pub fn transform_stream_with(&mut self, stream: Stream, handle: Handle) {
         match stream {
             Stream::Var(var) => {
-                let var = Handle(self.handles.bind(var));
+                let var = self.bind_flow(var);
                 self.add_instr(Instr::Make(handle, Flow::Copy(var)));
             }
             Stream::Const(val) => {
@@ -188,7 +164,7 @@ impl Code {
             Stream::Pipe(stream, machine) => {
                 let input = self.transform_stream(*stream);
                 let flow = match *machine {
-                    Machine::Var(var) => Flow::Pipe(input, Number(self.numbers.bind(var))),
+                    Machine::Var(var) => Flow::Pipe(input, self.bind_machine(var)),
                     Machine::Builtin(builtin) => Flow::Exec(input, builtin),
                 };
 
@@ -224,7 +200,7 @@ impl Code {
 
     /// Helper function for [`transform_stream_with`].
     pub fn transform_stream(&mut self, stream: Stream) -> Handle {
-        let handle = self.handle();
+        let handle = self.fresh_handle();
         self.transform_stream_with(stream, handle);
         handle
     }
@@ -236,6 +212,33 @@ impl Code {
             .last_mut()
             .expect("no units in `add_instr`")
             .0
+             .0
             .push(Instr::Make(Handle(0), Flow::Const(Value::Null)))
+    }
+
+    /// Bind a name in the currently compiled unit.
+    pub fn bind_flow(&mut self, name: String) -> Handle {
+        Handle(
+            self.units
+                .last_mut()
+                .expect("no units in `bind`")
+                .1
+                .bind(name),
+        )
+    }
+
+    /// Get a fresh handle in the currently compiled unit.
+    pub fn fresh_handle(&mut self) -> Handle {
+        Handle(self.units.last_mut().expect("no units in `bind`").1.fresh())
+    }
+
+    /// Bind a name in the currently compiled unit.
+    pub fn bind_machine(&mut self, name: String) -> Symbol {
+        Symbol(self.symbols.bind(name))
+    }
+
+    /// Get a fresh handle in the currently compiled unit.
+    pub fn fresh_symbol(&mut self) -> Symbol {
+        Symbol(self.symbols.fresh())
     }
 }
