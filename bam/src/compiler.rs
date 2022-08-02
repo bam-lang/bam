@@ -8,6 +8,13 @@ use crate::{syntax::Value, vm::SharedStream, Builtin, Machine, Program, Statemen
 #[derive(Copy, Clone)]
 pub struct Handle(u32);
 
+impl Handle {
+    /// Zero is reserved for the input handle.
+    pub fn input() -> Self {
+        Self(0)
+    }
+}
+
 /// Global handle to a [`Unit`].
 #[derive(Copy, Clone)]
 pub struct Symbol(u32);
@@ -155,8 +162,12 @@ impl Code {
     pub fn transform_stream_with(&mut self, stream: Stream, handle: Handle) {
         match stream {
             Stream::Var(var) => {
-                let var = self.bind_flow(var);
-                self.add_instr(Instr::Make(handle, Flow::Copy(var)));
+                if var == "input" {
+                    self.add_instr(Instr::Make(handle, Flow::Copy(Handle::input())));
+                } else {
+                    let var = self.bind_flow(var);
+                    self.add_instr(Instr::Make(handle, Flow::Copy(var)));
+                }
             }
             Stream::Const(val) => {
                 self.add_instr(Instr::Make(handle, Flow::Const(val)));
