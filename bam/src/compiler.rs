@@ -22,6 +22,8 @@ pub enum Flow {
     Const(Value),
     /// Stream of tuples.
     Zip(Vec<Handle>),
+    /// Just a handle.
+    Copy(Handle),
     /// Consume from the underlying stream a limited number of times.
     Take(Handle, usize),
     /// Consume from the underlying stream without changing it.
@@ -176,7 +178,10 @@ impl Code {
     /// Transform a stream to a flow and give it the supplied handle.
     pub fn transform_stream_with(&mut self, stream: Stream, handle: Handle) {
         match stream {
-            Stream::Var(var) => {}
+            Stream::Var(var) => {
+                let var = Handle(self.handles.bind(var));
+                self.add_instr(Instr::Make(handle, Flow::Copy(var)));
+            }
             Stream::Const(val) => {
                 self.add_instr(Instr::Make(handle, Flow::Const(val)));
             }
