@@ -116,7 +116,7 @@ lazy_static! {
                 output: Type::Tuple(vec![Type::TyVar(0), Type::TyVar(0), Type::TyVar(0)])
             }
         },
-        Builtin::Print => { // forall a. a -> a
+        Builtin::Write => { // forall a. a -> a
             MachineType {
                 var_count: 1,
                 input: Type::TyVar(0),

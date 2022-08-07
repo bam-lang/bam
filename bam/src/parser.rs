@@ -2,7 +2,7 @@ use crate::{
     syntax::{Builtin, Definition, Machine, Program, Statement, Stream, Value},
     Token,
 };
-use chumsky::{prelude::*, primitive::FilterMap};
+use chumsky::prelude::*;
 use std::ops::Range;
 use tracing::info;
 
@@ -12,7 +12,7 @@ impl ParserBuilder {
     #[inline]
     pub fn build() -> (
         impl Parser<Token, Program, Error = Simple<Token>>,
-        impl Parser<Token, Statement, Error = Simple<Token>>,
+        impl Parser<Token, Stream, Error = Simple<Token>>,
     ) {
         let stream: Recursive<Token, Stream, _> = recursive(|stream| {
             let stream_leaf = Self::ident()
@@ -103,7 +103,7 @@ impl ParserBuilder {
             .then_ignore(end())
             .map(|machines| Program { machines });
 
-        (program, statement)
+        (program, stream)
     }
 
     #[inline]
@@ -193,7 +193,7 @@ impl ParserBuilder {
                     "Not" => Machine::Builtin(Not),
                     "Dup2" => Machine::Builtin(Dup2),
                     "Dup3" => Machine::Builtin(Dup3),
-                    "Print" => Machine::Builtin(Print),
+                    "Write" => Machine::Builtin(Write),
                     "Read" => Machine::Builtin(Read),
                     _ => Machine::Var(ident),
                 }),

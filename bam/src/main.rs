@@ -1,23 +1,28 @@
-#![allow(unused)]
+use std::fs;
+
 use ansi_term::{Colour, Style};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Error, Result};
 use chumsky::Parser;
 use clap;
-use rustyline::{error::ReadlineError, Editor};
-use tracing::{info, level_filters, Level};
 
-mod util;
+use compiler::Compiler;
+use rustyline::{error::ReadlineError, Editor};
+use tracing::Level;
+
+mod compiler;
+mod eval;
 mod lexer;
 mod parser;
 mod syntax;
 mod types;
-mod compiler;
-// mod eval;
-mod vm;
+mod util;
 
+use eval::Loop;
 pub use lexer::{LexerBuilder, Token, KEYWORD_MAP};
 use types::GlobalTypeEnv;
 
+use crate::eval::Factory;
+// use crate::{compiler::Compiler, eval::Factory};
 pub use crate::{
     parser::ParserBuilder,
     syntax::{Builtin, Definition, Machine, Program, Statement, Stream, Value},
@@ -41,8 +46,8 @@ const BAM: &str = r#"
 "#;
 
 const HELP: &str = r#"
-> Type a stream expression and advance through it with Enter
-> Use the :d command to define a machine
+> Type in a machine name and feed it values through stdin
+> Use the :d command to define a new machine
 > Exit all modes, including the REPL, with Ctrl-D
 > Happy streaming!
 "#;
@@ -51,7 +56,7 @@ const HELP: &str = r#"
 #[clap(version, about, long_about = None)]
 struct Args {
     #[clap(help = "The source file to execute")]
-    source: Option<String>,
+    filename: Option<String>,
     #[clap(long, help = "Enable tracing")]
     trace: bool,
     #[clap(long, help = "Don't run the REPL")]
@@ -62,10 +67,12 @@ fn main() -> Result<()> {
     let args: Args = clap::Parser::parse();
 
     if args.trace {
-        tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+        tracing_subscriber::fmt()
+            .with_max_level(Level::TRACE)
+            .init();
     }
 
-    run_repl(args.source)
+    run_repl(args.filename)
 }
 
 /// REPL mode.
@@ -78,183 +85,170 @@ enum Mode {
     /// Stores the current line number.
     Definiton(usize),
     /// If in this mode, we're stepping through a stream.
-    Streaming(Statement),
+    Streaming(Loop),
 }
 
 fn run_repl(filename: Option<String>) -> Result<()> {
-    // println!("{}", Colour::Purple.bold().paint(BAM));
-    // println!("{}", Colour::White.bold().paint(HELP));
-    //
-    // let mut rl = Editor::<()>::new().unwrap();
-    //
-    // let mut type_env = GlobalTypeEnv::new();
-    //
-    // let lexer = LexerBuilder::build();
-    // let (program_parser, statement_parser) = ParserBuilder::build();
-    //
-    // let mut factory = Factory::new(Program { machines: vec![] });
-    //
-    // let mut load = |factory: &mut Factory, source: String| {
-    //     let tokens = lexer.parse(source).unwrap();
-    //     match program_parser.parse(tokens) {
-    //         Err(errors) => {
-    //             let errors = errors
-    //                 .into_iter()
-    //                 .map(|err| err.to_string())
-    //                 .collect::<Vec<_>>()
-    //                 .join("\n");
-    //
-    //             eprintln!(
-    //                 "{}",
-    //                 Colour::Red.bold().paint(format!("ParseErrors: {}", errors))
-    //             );
-    //         }
-    //         Ok(program) => {
-    //             // This should really be a single machine
-    //             for machine in program.machines {
-    //                 match types::check_machine_def(&mut type_env, &machine) {
-    //                     Err(err) => {
-    //                         eprintln!("{}", Colour::Red.bold().paint(format!("TypeError: {err}")))
-    //                     }
-    //                     Ok(()) => factory.bind_definition(machine.name.clone(), machine),
-    //                 }
-    //             }
-    //         }
-    //     }
-    // };
-    //
-    // if let Some(filename) = filename {
-    //     let source = std::fs::read_to_string(&filename)
-    //         .with_context(|| format!("Could not load file `{}`", filename))?;
-    //     load(&mut factory, source);
-    // }
-    //
-    // let mut mode = Mode::Statement;
-    // let mut definition_buf = String::new();
-    //
-    // let prompt = |mode: &mut Mode| match mode {
-    //     Mode::Statement => Colour::Blue.bold().paint("bam> ").to_string(),
-    //     Mode::Streaming(_) => Colour::Purple.bold().paint("BAM!> ").to_string(),
-    //     Mode::Definiton(l) => {
-    //         *l += 1;
-    //         Colour::White.bold().paint(format!("{l} | ")).to_string()
-    //     }
-    // };
-    //
-    // rl.load_history(".history");
-    // loop {
-    //     let current = rl.readline(&prompt(&mut mode));
-    //     info!("[REPL] handling line: {:?}", &current);
-    //     match current {
-    //         Ok(line) if line.trim().is_empty() => {
-    //             if let Mode::Streaming(ref mut stream) = mode {
-    //                 if let Statement::Consume(s) = stream {
-    //                     match factory.advance_stream(s) {
-    //                         Ok(value) => println!("{}", value),
-    //                         Err(err) => {
-    //                             eprintln!("{}", Colour::Red.italic().paint(format!("{err}")))
-    //                         }
-    //                     };
-    //                 } else {
-    //                     eprintln!(
-    //                         "{}",
-    //                         Colour::Red
-    //                             .italic()
-    //                             .paint("Cannot run let-statements, for now ...")
-    //                     )
-    //                 }
-    //             }
-    //         }
-    //         Ok(line) if line.starts_with(':') => match line.as_str() {
-    //             ":d" | ":define" => {
-    //                 mode = Mode::Definiton(0);
-    //             }
-    //             _ => eprintln!(
-    //                 "{}",
-    //                 Colour::Red
-    //                     .bold()
-    //                     .paint(format!("Unknown command: `{}`", &line[1..]))
-    //             ),
-    //         },
-    //         Ok(line) if matches!(mode, Mode::Definiton(_)) => {
-    //             definition_buf.push_str(&line);
-    //         }
-    //         Ok(line) if matches!(mode, Mode::Statement) => {
-    //             rl.add_history_entry(line.as_str());
-    //
-    //             let tokens = lexer.parse(line).unwrap();
-    //             match statement_parser.parse(tokens) {
-    //                 Err(errors) => eprintln!(
-    //                     "{}\n{}",
-    //                     Colour::Red.bold().paint("ParseError:"),
-    //                     errors
-    //                         .into_iter()
-    //                         .map(|err| { err.to_string() })
-    //                         .collect::<Vec<_>>()
-    //                         .join("\n")
-    //                 ),
-    //                 Ok(stream) => mode = Mode::Streaming(stream),
-    //             }
-    //         }
-    //         Err(ReadlineError::Eof) if matches!(mode, Mode::Streaming(_)) => mode = Mode::Statement,
-    //         Err(ReadlineError::Eof) if matches!(mode, Mode::Definiton(_)) => {
-    //             let lines = definition_buf.drain(..).collect::<String>();
-    //             rl.add_history_entry(lines.as_str());
-    //             load(&mut factory, lines);
-    //             mode = Mode::Statement
-    //         }
-    //         Err(ReadlineError::Interrupted) => {
-    //             // Ctrl+C shouldn't crash the REPL
-    //         }
-    //         Err(ReadlineError::Eof) => {
-    //             println!("{}", Style::new().italic().paint("Exiting ..."));
-    //             rl.save_history(".history").is_ok();
-    //             break;
-    //         }
-    //         error => {
-    //             rl.save_history(".history").is_ok();
-    //             error
-    //                 .map(|_| ())
-    //                 .with_context(|| format!("Unexpected error while reading input"))?;
-    //         }
-    //     }
-    // }
-    //
-    // rl.save_history(".history");
-    Ok(())
-}
+    println!("{}", Colour::Purple.bold().paint(BAM));
+    println!("{}", Colour::White.bold().paint(HELP));
 
-fn run(path: &str) {
+    // REPL state.
+
+    // Lexer.
     let lexer = LexerBuilder::build();
-    let parser = ParserBuilder::build().0;
+    // Program and Statement parsers.
+    let (pparser, sparser) = ParserBuilder::build();
+    // Global typing environment.
+    let mut tenv = GlobalTypeEnv::new();
+    // Rustyline editor.
+    let mut editor = Editor::<()>::new().unwrap();
+    // Abstract syntax tree.
+    let mut program = Program {
+        machines: Vec::new(),
+    };
+    // Interaction mode.
+    let mut mode = Mode::Statement;
+    // Buffer for saving lines in :d mode.
+    let mut definition_buf = String::new();
+    // Execution engine.
+    let mut factory = Factory::new(Compiler::new().transform(program.clone()));
 
-    let source = include_str!("../examples/hello.bam").to_owned();
-    info!("[SOURCE]: {source}\n");
+    // Methods.
 
-    info!("[LEXER] begin");
-    let tokens = lexer.parse(source).unwrap();
-    info!("[LEXER] end");
+    let mut parse_program = |source: String| -> Result<Vec<Definition>> {
+        let tokens = lexer.parse(source).map_err(|errs| {
+            anyhow!(
+                "{}",
+                errs.into_iter()
+                    .map(|err| err.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        })?;
 
-    info!("[TOKENS]: {tokens:#?}\n");
+        let program = pparser.parse(tokens).map_err(|errs| {
+            anyhow!(
+                "{}",
+                errs.into_iter()
+                    .map(|err| err.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        })?;
 
-    let program = parser.parse(tokens).unwrap();
-    info!("[PROGRAM]: {program:#?}\n");
+        program
+            .machines
+            .into_iter()
+            .map(|m| match types::check_machine_def(&mut tenv, &m) {
+                Err(err) => bail!(err),
+                Ok(()) => Ok(m),
+            })
+            .collect()
+    };
 
-    match types::check(&program) {
-        Ok(()) => (),
-        Err(err) => println!("Type Error: {err:#?}"),
+    let _parse_statement = |source: String| -> Result<Stream> {
+        let tokens = lexer.parse(source).map_err(|errs| {
+            anyhow!(
+                "{}",
+                errs.into_iter()
+                    .map(|err| err.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        })?;
+
+        sparser.parse(tokens).map_err(|errs| {
+            anyhow!(
+                "{}",
+                errs.into_iter()
+                    .map(|err| err.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        })
+
+        // FIXME: no typechecking here :(
+    };
+
+    let report = |err: Error| eprintln!("{}", Colour::Red.bold().paint(err.to_string()));
+
+    let mut load_program = |source: String, factory: &mut Factory| match parse_program(source) {
+        Ok(machines) => {
+            program.machines.extend(machines.into_iter());
+            let module = Compiler::new().transform(program.clone());
+            *factory = Factory::new(module);
+        }
+        Err(err) => report(err),
+    };
+
+    let prompt = |mode: &mut Mode| match mode {
+        Mode::Statement => Colour::Blue.bold().paint("bam> ").to_string(),
+        Mode::Streaming(_) => Colour::Purple.bold().paint("BAM!> ").to_string(),
+        Mode::Definiton(l) => {
+            *l += 1;
+            Colour::White.bold().paint(format!("{l} | ")).to_string()
+        }
+    };
+
+    // Entry point.
+
+    if let Some(filename) = filename {
+        let source = fs::read_to_string(&filename)
+            .with_context(|| format!("Could not load file `{}`", filename))?;
+        load_program(source, &mut factory);
     }
 
-    // // let mut factory = eval::Factory::new(program);
-    //
-    // loop {
-    //     let result = factory.advance_stream(&mut Stream::Pipe(
-    //         Stream::Const(Value::Num(42f64)).into(),
-    //         Machine::Var("Main".to_string()).into(),
-    //     ));
-    //
-    //     info!("[STEP]: {result:#?}");
-    // }
+    editor.load_history(".history")?;
+    loop {
+        match editor.readline(&prompt(&mut mode)) {
+            Ok(line) if line.trim().is_empty() => {
+                if let Mode::Streaming(ref mut values) = mode {
+                    match values.step() {
+                        Ok(value) => println!("{}", value),
+                        Err(err) => report(err),
+                    };
+                }
+            }
+            Ok(line) if line.starts_with(':') => match line.as_str() {
+                ":d" | ":define" => {
+                    mode = Mode::Definiton(0);
+                }
+                _ => report(anyhow!("Unknown command: `{}`", &line[1..])),
+            },
+            Ok(line) if matches!(mode, Mode::Definiton(_)) => {
+                definition_buf.push_str(&line);
+            }
+            Ok(line) if matches!(mode, Mode::Statement) => {
+                editor.add_history_entry(line.as_str());
+                let values = factory.make_loop(&line);
+                mode = Mode::Streaming(values);
+            }
+            Err(ReadlineError::Eof) if matches!(mode, Mode::Streaming(_)) => mode = Mode::Statement,
+            Err(ReadlineError::Eof) if matches!(mode, Mode::Definiton(_)) => {
+                let lines = definition_buf.drain(..).collect::<String>();
+                editor.add_history_entry(lines.as_str());
+                load_program(lines, &mut factory);
+                mode = Mode::Statement;
+            }
+            Err(ReadlineError::Interrupted) => {
+                // Ctrl+C shouldn't crash the REPL
+            }
+            Err(ReadlineError::Eof) => {
+                println!("{}", Style::new().italic().paint("Exiting ..."));
+                editor.save_history(".history")?;
+                break;
+            }
+            error => {
+                editor.save_history(".history")?;
+                error
+                    .map(|_| ())
+                    .with_context(|| format!("Unexpected error while reading input"))?;
+            }
+        }
+    }
+
+    editor.save_history(".history")?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -310,7 +304,7 @@ mod tests {
                     )],
                     result: Pipe(
                         Box::new(Take(Box::new(Stream::Var("hello".to_string())), 1)),
-                        Box::new(Machine::Builtin(Print))
+                        Box::new(Machine::Builtin(Write))
                     )
                 }]
             }
@@ -331,8 +325,6 @@ mod tests {
                 errs
             })
             .unwrap();
-
-        info!("[TOKENS]: {:#?}", &tokens);
 
         let result = ParserBuilder::build()
             .0
@@ -358,7 +350,7 @@ mod tests {
                     )],
                     result: Pipe(
                         Box::new(Take(Box::new(Stream::Var("hello".to_string())), 1)),
-                        Box::new(Machine::Builtin(Print))
+                        Box::new(Machine::Builtin(Write))
                     )
                 }]
             }

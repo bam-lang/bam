@@ -1,10 +1,4 @@
 use core::fmt;
-use std::{
-    cell::{Cell, RefCell},
-    collections::VecDeque,
-    ptr::NonNull,
-    rc::Rc,
-};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
@@ -21,8 +15,6 @@ pub enum Statement {
     Let(Vec<String>, Stream), // let x, y = s;
     Consume(Stream),          // s;
 }
-// Id = input
-// Five = 5
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stream {
@@ -40,16 +32,6 @@ pub enum Stream {
 impl Default for Stream {
     fn default() -> Self {
         Stream::Const(Value::Null)
-    }
-}
-
-impl Stream {
-    /// Is this the input stream?
-    pub fn is_input(&self) -> bool {
-        match self {
-            Stream::Var(var) if var.eq("input") => true,
-            _ => false,
-        }
     }
 }
 
@@ -76,7 +58,7 @@ pub enum Builtin {
     Not,
     Dup2,
     Dup3,
-    Print,
+    Write,
     Read,
 }
 
@@ -89,6 +71,12 @@ pub enum Value {
     Str(String),
     Bool(bool),
     Tuple(Vec<Value>),
+}
+
+impl Default for Value {
+    fn default() -> Self {
+        Self::Null
+    }
 }
 
 impl fmt::Display for Value {
