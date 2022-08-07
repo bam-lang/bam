@@ -36,7 +36,10 @@ impl fmt::Display for Handle {
 /// A stream without nesting and user-variables.
 #[derive(Debug, Clone)]
 pub enum FlatStream {
+    /// Standard input.
     Stdin,
+    /// Integer range.
+    Integers,
     /// Always return the same value. Boring!
     Repeat(Value),
     /// Stream of tuples.
@@ -61,6 +64,7 @@ impl fmt::Display for FlatStream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FlatStream::Stdin => write!(f, "stdin"),
+            FlatStream::Integers => write!(f, "integers"),
             FlatStream::Repeat(val) => write!(f, "{val}"),
             FlatStream::Zip(hdls) => write!(
                 f,
@@ -84,6 +88,7 @@ impl FlatStream {
     pub fn instantiate(&self, offset: usize) -> Self {
         match self {
             FlatStream::Stdin => FlatStream::Stdin,
+            FlatStream::Integers => FlatStream::Integers,
             FlatStream::Repeat(val) => FlatStream::Repeat(val.clone()),
             FlatStream::Zip(hdls) => {
                 FlatStream::Zip(hdls.iter().cloned().map(|hdl| hdl.add(offset)).collect())
@@ -296,14 +301,19 @@ impl Compiler {
     /// Transform a stream to a flow and give it the supplied handle.
     pub fn transform_stream_with(&mut self, stream: Stream, handle: Handle) {
         match stream {
-            Stream::Var(var) => {
-                let sflow = if var == "input" {
-                    self.current().input
-                } else {
-                    self.bind_flow(var.clone())
-                };
-                self.add_instr(Instr::Make(handle, FlatStream::Copy(sflow)));
-            }
+            Stream::Var(var) => match var.as_str() {
+                "integers" => {
+                    self.add_instr(Instr::Make(handle, FlatStream::Integers));
+                }
+                "input" => {
+                    let sflow = self.current().input;
+                    self.add_instr(Instr::Make(handle, FlatStream::Copy(sflow)));
+                }
+                _ => {
+                    let sflow = self.bind_flow(var.clone());
+                    self.add_instr(Instr::Make(handle, FlatStream::Copy(sflow)));
+                }
+            },
             Stream::Const(val) => {
                 self.add_instr(Instr::Make(handle, FlatStream::Repeat(val)));
             }

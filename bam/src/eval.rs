@@ -216,6 +216,14 @@ impl Factory {
                     Ok(Str(buf))
                 })
             }
+            FlatStream::Integers => {
+                let mut state = Value::Num(0 as f64);
+                flow!(_env, {
+                    let current = state.clone().to_num();
+                    state = Num(current + 1f64);
+                    Ok(Num(current))
+                })
+            }
             FlatStream::Repeat(val) => {
                 flow!(_env, Ok(val.clone()))
             }
@@ -405,7 +413,9 @@ impl Factory {
                 Ok(Value::Tuple(triple))
             }
             Builtin::Write => {
-                write!(stdout(), "{}", &value)?;
+                // FIXME: this should be write insead,
+                // but we have no \n yet.
+                writeln!(stdout(), "{}", &value)?;
                 Ok(value)
             }
             Builtin::Read => {

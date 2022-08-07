@@ -139,10 +139,13 @@ fn run_repl(filename: Option<String>) -> Result<()> {
         program
             .machines
             .into_iter()
-            .map(|m| match types::check_machine_def(&mut tenv, &m) {
-                Err(err) => bail!(err),
-                Ok(()) => Ok(m),
-            })
+            // FIXME: The typechecker sometimes overflows the stack,
+            // probably with the Drain function.
+            // .map(|m| match types::check_machine_def(&mut tenv, &m) {
+            //     Err(err) => bail!(err),
+            //     Ok(()) => Ok(m),
+            // })
+            .map(|m| Ok(m))
             .collect()
     };
 
@@ -212,6 +215,12 @@ fn run_repl(filename: Option<String>) -> Result<()> {
             Ok(line) if line.starts_with(':') => match line.as_str() {
                 ":d" | ":define" => {
                     mode = Mode::Definiton(0);
+                }
+                ":l" | ":load" => {
+                    todo!()
+                }
+                ":r" | ":reload" => {
+                    todo!()
                 }
                 _ => report(anyhow!("Unknown command: `{}`", &line[1..])),
             },

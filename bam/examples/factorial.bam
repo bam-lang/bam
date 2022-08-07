@@ -8,7 +8,13 @@ machine Factorial {
         : (((y, 1) -> Sub -> Factorial), z) -> Mul
 }
 
+machine Drain {
+    (((input -> Write), null) -> Eq)
+        ? null
+        : input -> Drain
+}
+
 machine Main {
-    let forty_two = 42{1};
-    forty_two -> Factorial
+    let factorials = integers -> Factorial;
+    factorials -> Drain
 }

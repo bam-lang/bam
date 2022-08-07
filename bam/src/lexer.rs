@@ -1,8 +1,8 @@
-use crate::{hashmap};
+use crate::hashmap;
 use chumsky::{
     error::Simple,
     prelude::*,
-    text::{self, ident,  keyword, TextParser},
+    text::{self, ident, keyword, TextParser},
     Parser,
 };
 use lazy_static::lazy_static;
@@ -19,8 +19,8 @@ lazy_static! {
         "?" => Token::QuestionMark,
         ":" => Token::Colon,
         ";" => Token::Semicolon,
-        "!" => Token::Bang,
         "->" => Token::Pipe,
+        "!" => Token::Bang,
         "let" => Token::Let,
         "machine" => Token::Machine,
         "null" => Token::Null
@@ -46,7 +46,7 @@ pub enum Token {
     Pipe,
     Machine,
     Null,
-    Bang
+    Bang,
 }
 
 impl Display for Token {
