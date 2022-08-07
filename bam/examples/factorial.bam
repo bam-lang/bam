@@ -1,5 +1,14 @@
 machine Factorial {
-    ((!input, 1) -> Lt)
+    -- There is some black magic going on here ...
+    -- I'm not entirely sure why this, _and only this_
+    -- stops Main from consuming all of 42. ¯\_(ツ)_/¯
+    let x, y, z = !input -> Dup3;
+    ((x, 1) -> Lt)
         ? 1
-        : (((!input, 1) -> Sub -> Factorial), input) -> Mul
+        : (((y, 1) -> Sub -> Factorial), z) -> Mul
+}
+
+machine Main {
+    let forty_two = 42{1};
+    forty_two -> Factorial
 }
