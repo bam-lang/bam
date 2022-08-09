@@ -340,7 +340,7 @@ impl Compiler {
                 "integers" => {
                     self.add_instr(Instr::Make(handle, FlatStream::Integers));
                 }
-                "input" => {
+                "it" => {
                     return self.current().input;
                 }
                 _ => {

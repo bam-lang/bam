@@ -1,18 +1,18 @@
-machine Divisible {
-    let x, divisor = input;
+machine Divides {
+    let x, divisor = it;
     (((x, divisor) -> Mod), 0) -> Eq
 }
 
 machine FizzBuzz {
-    let fifteen = (!input, 15) -> Divisible;
-    let five    = (!input,  5) -> Divisible;
-    let three   = (!input,  3) -> Divisible;
+    let fifteen = (!it, 15) -> Divides;
+    let five    = (!it,  5) -> Divides;
+    let three   = (!it,  3) -> Divides;
 
     fifteen
-        ? (input, "FizzBuzz")
+        ? (it, "FizzBuzz")
         : five
-            ? (input, "Buzz")
+            ? (it, "Buzz")
             : three
-                ? (input, "Fizz")
-                : input
+                ? (it, "Fizz")
+                : it
 }

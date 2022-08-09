@@ -2,16 +2,15 @@ machine Factorial {
     -- There is some black magic going on here ...
     -- I'm not entirely sure why this, _and only this_
     -- stops Main from consuming all of 42. ¯\_(ツ)_/¯
-    let x, y, z = !input -> Dup3;
-    ((x, 1) -> Lt)
+    ((!it, 1) -> Lt)
         ? 1
-        : (((y, 1) -> Sub -> Factorial), z) -> Mul
+        : (((!it, 1) -> Sub -> Factorial), it) -> Mul
 }
 
 machine Drain {
-    (((input -> Write), null) -> Eq)
+    (((it -> Write), null) -> Eq)
         ? null
-        : input -> Drain
+        : it -> Drain
 }
 
 machine Main {
