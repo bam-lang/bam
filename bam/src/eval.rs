@@ -2,6 +2,7 @@
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
+    fmt::{self, Display},
     io::{stdin, stdout, Write},
     rc::Rc,
 };
@@ -16,9 +17,9 @@ use tracing::trace;
 
 /// Infinite value stream.
 pub struct Loop {
-    env: SharedEnv,
-    fstream: FlatStream,
-    factory: Factory,
+    pub env: SharedEnv,
+    pub fstream: FlatStream,
+    pub factory: Factory,
 }
 
 impl Loop {
@@ -54,6 +55,18 @@ pub struct Env {
 /// Shared stream environment.
 #[derive(Clone)]
 pub struct SharedEnv(Rc<RefCell<Env>>);
+
+impl Display for SharedEnv {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let env = &*self.0.borrow();
+
+        writeln!(f, "[")?;
+        for (hdl, val) in &env.flows {
+            writeln!(f, "  {hdl} = {val};")?;
+        }
+        writeln!(f, "]")
+    }
+}
 
 impl SharedEnv {
     /// Creates an empty `SharedEnv` with no outer layer.
@@ -122,6 +135,12 @@ impl<F> Flow for F where F: FnMut(SharedEnv) -> Result<Value> + 'static {}
 pub struct SharedFlow {
     flow: Rc<RefCell<dyn Flow>>,
     cache: Rc<Cell<Value>>,
+}
+
+impl Display for SharedFlow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.cache.clone().take())
+    }
 }
 
 impl SharedFlow {

@@ -93,7 +93,7 @@ impl fmt::Display for Value {
                 values
                     .iter()
                     .map(|s| format!("{s}"))
-                    .reduce(|acc, val| acc + val.as_str())
+                    .reduce(|acc, val| (acc + ", " + val.as_str()))
                     .unwrap_or_else(|| "".to_string())
             ),
         }

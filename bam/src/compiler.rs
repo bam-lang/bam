@@ -70,7 +70,9 @@ impl fmt::Display for FlatStream {
                 f,
                 "({})",
                 hdls.into_iter()
-                    .fold(String::new(), |acc, &hdl| acc + &format!(", {hdl}"))
+                    .map(|hdl| format!("{hdl}"))
+                    .reduce(|acc, s| (acc + ", " + s.as_str()))
+                    .unwrap_or_else(|| "".to_string())
             ),
             FlatStream::Copy(hdl) => write!(f, "{hdl}"),
             FlatStream::Take(hdl, rst) => write!(f, "{hdl}{{{rst}}}"),
@@ -111,6 +113,16 @@ impl FlatStream {
 pub struct Unit {
     input: Handle,
     instrs: Vec<Instr>,
+}
+
+impl fmt::Display for Unit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{}: {{", self.input)?;
+        for instr in &self.instrs {
+            writeln!(f, "  {instr};")?;
+        }
+        writeln!(f, "}}")
+    }
 }
 
 impl Unit {
@@ -166,6 +178,16 @@ pub enum Instr {
     Next(Handle), // Stream -> Value
     /// Consume a value from this stream and return it.
     Exit(Handle),
+}
+
+impl fmt::Display for Instr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Instr::Make(hdl, stream) => write!(f, "{hdl} = {stream}"),
+            Instr::Next(hdl) => write!(f, "next {hdl}"),
+            Instr::Exit(hdl) => write!(f, "exit {hdl}"),
+        }
+    }
 }
 
 impl Instr {
@@ -226,6 +248,16 @@ impl Renamer {
 #[derive(Debug)]
 pub struct Module(pub HashMap<String, Unit>);
 
+impl fmt::Display for Module {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (name, unit) in &self.0 {
+            writeln!(f, "{name} = {unit}")?;
+        }
+
+        Ok(())
+    }
+}
+
 /// Compiler context.
 #[derive(Debug)]
 pub struct Compiler {
@@ -280,14 +312,12 @@ impl Compiler {
             Statement::Let(mut names, stream) => {
                 if names.len() == 1 {
                     let name = names.pop().unwrap();
-                    let handle = self.bind_flow(name);
-                    self.transform_stream_with(stream, handle);
+                    self.transform_stream_with(stream, Some(name));
                 } else {
-                    let tuple = self.fresh_handle();
-                    self.transform_stream_with(stream, tuple);
+                    let tuple = self.transform_stream(stream);
                     for (index, name) in names.into_iter().enumerate() {
                         let handle = self.bind_flow(name);
-                        self.add_instr(Instr::Make(handle, FlatStream::Proj(tuple, index)))
+                        self.add_instr(Instr::Make(handle, FlatStream::Proj(tuple, index)));
                     }
                 }
             }
@@ -299,19 +329,22 @@ impl Compiler {
     }
 
     /// Transform a stream to a flow and give it the supplied handle.
-    pub fn transform_stream_with(&mut self, stream: Stream, handle: Handle) {
+    pub fn transform_stream_with(&mut self, stream: Stream, name: Option<String>) -> Handle {
+        let handle = match name {
+            Some(name) => self.bind_flow(name),
+            None => self.fresh_handle(),
+        };
+
         match stream {
             Stream::Var(var) => match var.as_str() {
                 "integers" => {
                     self.add_instr(Instr::Make(handle, FlatStream::Integers));
                 }
                 "input" => {
-                    let sflow = self.current().input;
-                    self.add_instr(Instr::Make(handle, FlatStream::Copy(sflow)));
+                    return self.current().input;
                 }
                 _ => {
-                    let sflow = self.bind_flow(var.clone());
-                    self.add_instr(Instr::Make(handle, FlatStream::Copy(sflow)));
+                    return self.bind_flow(var.clone());
                 }
             },
             Stream::Const(val) => {
@@ -352,13 +385,13 @@ impl Compiler {
                 self.add_instr(Instr::Make(handle, FlatStream::Peek(inner)))
             }
         };
+
+        handle
     }
 
     /// Helper function for [`transform_stream_with`].
     pub fn transform_stream(&mut self, stream: Stream) -> Handle {
-        let handle = self.fresh_handle();
-        self.transform_stream_with(stream, handle);
-        handle
+        self.transform_stream_with(stream, None)
     }
 
     /// Add an instruction in the currently compiled unit.
