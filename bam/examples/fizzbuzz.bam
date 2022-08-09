@@ -1,0 +1,18 @@
+machine Divisible {
+    let x, divisor = input;
+    (((x, divisor) -> Mod), 0) -> Eq
+}
+
+machine FizzBuzz {
+    let fifteen = (!input, 15) -> Divisible;
+    let five    = (!input,  5) -> Divisible;
+    let three   = (!input,  3) -> Divisible;
+
+    fifteen
+        ? (input, "FizzBuzz")
+        : five
+            ? (input, "Buzz")
+            : three
+                ? (input, "Fizz")
+                : input
+}
