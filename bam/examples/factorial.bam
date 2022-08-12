@@ -1,0 +1,19 @@
+machine Factorial {
+    -- There is some black magic going on here ...
+    -- I'm not entirely sure why this, _and only this_
+    -- stops Main from consuming all of 42. ¯\_(ツ)_/¯
+    ((!it, 1) -> Lt)
+        ? 1
+        : (((!it, 1) -> Sub -> Factorial), it) -> Mul
+}
+
+machine Drain {
+    (((it -> Write), null) -> Eq)
+        ? null
+        : it -> Drain
+}
+
+machine Main {
+    let factorials = integers -> Factorial;
+    factorials -> Drain
+}

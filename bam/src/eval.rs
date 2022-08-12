@@ -1,45 +1,351 @@
-use crate::{
-    syntax::{Builtin, Machine, Program, Statement, Stream, Value},
-    Definition,
+///! BAM! virtual machine.
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    fmt::{self, Display},
+    io::{stdin, stdout, Write},
+    rc::Rc,
 };
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::io::stdin;
 
-use anyhow::{anyhow, bail, Context, Result};
-use tracing::info;
+use crate::{
+    compiler::{FlatStream, Handle, Instr, Module, Unit},
+    Builtin, Value,
+};
 
-/// BAM! execution engine.
-pub struct Factory {
-    machines: RefCell<HashMap<String, Machine>>,
-    streams: RefCell<HashMap<String, Stream>>,
+use anyhow::{anyhow, bail, Result};
+use tracing::trace;
+
+/// Infinite value stream.
+pub struct Loop {
+    pub env: SharedEnv,
+    pub fstream: FlatStream,
+    pub factory: Factory,
 }
 
-impl Factory {
-    /// Create a factory given the abstract syntax tree.
-    pub fn new(program: Program) -> Self {
-        Factory {
-            machines: RefCell::new(
-                program
-                    .machines
-                    .into_iter()
-                    .map(|m| (m.name.clone(), Machine::Defined(m.body, m.result)))
-                    .collect(),
-            ),
-            streams: RefCell::new(HashMap::new()),
+impl Loop {
+    /// Steps through the stream.
+    pub fn step(&self) -> Result<Value> {
+        self.factory
+            .clone()
+            .compile(self.fstream.clone())
+            .next(&self.env)
+    }
+}
+
+macro_rules! flow {
+    ($env:ident, $body:expr) => {{
+        #[allow(unused_imports)]
+        use Value::*;
+        SharedFlow::new(move |$env: SharedEnv| $body)
+    }};
+}
+
+// SAFETY: if we can prove that BAM!'s semantics and/or
+// the structure of the evaluator follow Rust's aliasing
+// xor mutability principle, we can drop the `RefCell`s
+// in favour of `UnsafeCell`.
+
+/// Flow environment.
+pub struct Env {
+    outer: Option<SharedEnv>,
+    // TODO: replace this with a vector.
+    flows: HashMap<Handle, SharedFlow>,
+}
+
+/// Shared stream environment.
+#[derive(Clone)]
+pub struct SharedEnv(Rc<RefCell<Env>>);
+
+impl Display for SharedEnv {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let env = &*self.0.borrow();
+
+        writeln!(f, "[")?;
+        for (hdl, val) in &env.flows {
+            writeln!(f, "  {hdl} = {val};")?;
+        }
+        writeln!(f, "]")
+    }
+}
+
+impl SharedEnv {
+    /// Creates an empty `SharedEnv` with no outer layer.
+    pub fn new() -> Self {
+        let env = Env {
+            outer: None,
+            flows: HashMap::new(),
+        };
+        Self(Rc::new(RefCell::new(env)))
+    }
+
+    /// Creates an empty `SharedEnv` with that shadows `outer`.
+    pub fn shadow(outer: Self) -> Self {
+        let env = Env {
+            outer: Some(outer),
+            flows: HashMap::new(),
+        };
+        Self(Rc::new(RefCell::new(env)))
+    }
+
+    /// Resolves a `Handle` in the environment.
+    pub fn get(&self, handle: Handle) -> Result<SharedFlow> {
+        let env = &*self.0.borrow();
+
+        match env.flows.get(&handle) {
+            Some(sf) => Ok(sf.clone()),
+            None => match &env.outer {
+                Some(e) => e.get(handle),
+                None => bail!("Undefined stream handle {:?}", handle),
+            },
         }
     }
 
-    // Add a named machine to the factory from a definition.
-    pub fn bind_definition(&self, name: String, machine: Definition) {
-        // TODO: handle Borrow errors.
-        self.machines
-            .borrow_mut()
-            .insert(name, Machine::Defined(machine.body, machine.result));
+    /// Resolves a `Handle` in the first environment.
+    pub fn get_from_head(&self, handle: Handle) -> Option<SharedFlow> {
+        let env = &*self.0.borrow();
+        env.flows.get(&handle).cloned()
     }
 
-    /// Perform one step of builtin machine evaluation.
-    pub fn run_builtin_machine(&self, builtin: &Builtin, value: Value) -> Result<Value> {
+    /// Resolves a `Handle` in the first environment.
+    pub fn get_from_outer(&self, handle: Handle) -> Option<SharedFlow> {
+        let env = &*self.0.borrow();
+        match &env.outer {
+            Some(e) => {
+                let env = &*e.0.borrow();
+                env.flows.get(&handle).cloned()
+            }
+            None => None,
+        }
+    }
+
+    /// Inserts a `SharedEnv` at the specified `Handle`.
+    pub fn set(&self, handle: Handle, sflow: SharedFlow) {
+        let env = &mut *self.0.borrow_mut();
+        env.flows.insert(handle, sflow);
+    }
+}
+
+/// Compiled `FlatStream`.
+pub trait Flow: FnMut(SharedEnv) -> Result<Value> + 'static {}
+
+impl<F> Flow for F where F: FnMut(SharedEnv) -> Result<Value> + 'static {}
+
+/// A reference-counted, mutable flow in memory.
+#[derive(Clone)]
+pub struct SharedFlow {
+    flow: Rc<RefCell<dyn Flow>>,
+    cache: Rc<Cell<Value>>,
+}
+
+impl Display for SharedFlow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.cache.clone().take())
+    }
+}
+
+impl SharedFlow {
+    /// Creates a new `SharedFlow` from a `Closure`.
+    pub fn new(inner: impl Flow) -> Self {
+        Self {
+            flow: Rc::new(RefCell::new(inner)),
+            cache: Rc::new(Cell::new(Value::Null)),
+        }
+    }
+
+    /// Consume a `Value` from this `SharedFlow`.
+    pub fn next(&self, env: &SharedEnv) -> Result<Value> {
+        let flow = &mut *self.flow.borrow_mut();
+
+        match self.cache.take() {
+            Value::Null => flow(env.clone()),
+            other => Ok(other),
+        }
+    }
+
+    /// Consume a `Value` from this `SharedFlow` whilst ignoring the cache.
+    pub fn peek(&self, env: &SharedEnv) -> Result<Value> {
+        let flow = &mut *self.flow.borrow_mut();
+
+        let val = match self.cache.take() {
+            Value::Null => flow(env.clone()),
+            other => Ok(other),
+        }?;
+
+        self.cache.set(val.clone());
+        Ok(val)
+    }
+}
+
+/// BAM!'s execution engine.
+#[derive(Clone)]
+pub struct Factory {
+    module: Rc<Module>,
+    // TODO: this is the trickiest bit and needs documentation.
+    offset: Cell<usize>,
+}
+
+impl Factory {
+    /// Creates a `Factory` from a `Module`.
+    pub fn new(module: Module) -> Self {
+        Self {
+            module: Rc::new(module),
+            offset: Cell::new(0),
+        }
+    }
+
+    /// Starts the factory in the Main unit.
+    pub fn make_loop(&self, name: &str) -> Loop {
+        let env = SharedEnv::new();
+        let input = self.clone().compile(FlatStream::Stdin);
+        env.set(Handle::input(), input);
+        let fstream = FlatStream::Pipe(Handle::input(), String::from(name));
+
+        Loop {
+            env,
+            fstream,
+            factory: self.clone(),
+        }
+    }
+
+    /// Resolves a unit from the factory.
+    pub fn unit(&self, name: &str) -> Result<Unit> {
+        self.module
+            .0
+            .get(name)
+            .cloned()
+            .ok_or(anyhow!("Undefined fantastic machine {name}"))
+    }
+
+    /// Creates a `Factory` with a new offset.
+    fn bump(&self, amount: usize) {
+        let offset = self.offset.get() + amount;
+        self.offset.replace(offset);
+    }
+
+    /// Transform a `FlatStream` into a `SharedFlow`.
+    pub fn compile(self, fstream: FlatStream) -> SharedFlow {
+        // FIXME: this cache thing everywhere, macro?
+        trace!("[EVAL] factory/compile {fstream}");
+        match fstream {
+            FlatStream::Stdin => {
+                flow!(_env, {
+                    // FIXME: decide on `stdin` vs `null -> Read`
+                    let mut buf = String::new();
+                    stdin().read_line(&mut buf)?;
+                    Ok(Str(buf))
+                })
+            }
+            FlatStream::Integers => {
+                let mut state = Value::Num(0 as f64);
+                flow!(_env, {
+                    let current = state.clone().to_num();
+                    state = Num(current + 1f64);
+                    Ok(Num(current))
+                })
+            }
+            FlatStream::Repeat(val) => {
+                flow!(_env, Ok(val.clone()))
+            }
+            FlatStream::Zip(hdls) => {
+                flow!(
+                    env,
+                    Ok(Tuple(
+                        hdls.clone()
+                            .into_iter()
+                            .map(|hdl| env.get(hdl).and_then(|sflow| sflow.next(&env)))
+                            .collect::<Result<_, _>>()?,
+                    ))
+                )
+            }
+            FlatStream::Copy(hdl) => {
+                flow!(env, env.get(hdl)?.next(&env))
+            }
+            FlatStream::Take(hdl, rest) => {
+                let mut state = Value::Num(rest as f64);
+                flow!(env, {
+                    let sflow = env.get(hdl)?;
+                    let current = state.clone().to_num();
+
+                    if current == 0f64 {
+                        Ok(Null)
+                    } else {
+                        state = Num(current - 1f64);
+                        sflow.next(&env)
+                    }
+                })
+            }
+            FlatStream::Peek(hdl) => {
+                flow!(env, env.get(hdl)?.peek(&env))
+            }
+            FlatStream::Pipe(hdl, name) => flow!(env, {
+                let unit = self.unit(&name)?.instantiate(self.offset.get());
+                self.bump(unit.allocs() + 1);
+                let input = env.get(hdl)?;
+                let env = SharedEnv::shadow(env);
+                env.set(unit.input(), input);
+
+                for instr in unit.unpack() {
+                    match instr {
+                        Instr::Make(handle, fstream) => {
+                            let sflow = self.clone().compile(fstream);
+                            env.set(handle, sflow);
+                        }
+                        Instr::Next(handle) => {
+                            let sflow = env.get(handle)?;
+                            sflow.next(&env)?;
+                        }
+                        Instr::Exit(handle) => {
+                            let sflow = env.get(handle)?;
+                            return sflow.next(&env);
+                        }
+                    }
+                }
+
+                bail!("FatalError: a unit was missing an Exit instr.")
+            }),
+            FlatStream::Exec(hdl, builtin) => {
+                flow!(env, {
+                    let input = env.get(hdl)?;
+                    let val = input.next(&env)?;
+                    Self::exec(val, builtin.clone())
+                })
+            }
+            FlatStream::Proj(hdl, idx) => {
+                flow!(env, {
+                    let input = env.get(hdl)?;
+                    let val = input.next(&env)?;
+                    if let Value::Tuple(values) = val {
+                        match values.get(idx) {
+                            Some(val) => Ok(val.clone()),
+                            None => bail!("Bad index in unzip: {}", idx),
+                        }
+                    } else {
+                        bail!("Proj on non-tuple value.")
+                    }
+                })
+            }
+            FlatStream::Cond(cond, then, otherwise) => {
+                flow!(env, {
+                    let cond = env.get(cond)?;
+                    let val = cond.next(&env)?;
+                    if let Value::Bool(cond) = val {
+                        if cond {
+                            let then = env.get(then)?;
+                            then.next(&env)
+                        } else {
+                            let then = env.get(otherwise)?;
+                            then.next(&env)
+                        }
+                    } else {
+                        bail!("Non-bool value in conditional")
+                    }
+                })
+            }
+        }
+    }
+
+    /// Execute a builtin machine.
+    pub fn exec(value: Value, builtin: Builtin) -> Result<Value> {
         match builtin {
             Builtin::Add => {
                 let (lhs, rhs) = value.to_pair();
@@ -113,140 +419,28 @@ impl Factory {
                 let rhs = rhs.to_bool();
                 Ok(Value::Bool(lhs || rhs))
             }
-            Builtin::Not => Ok(Value::Bool(!value.to_bool())),
-            Builtin::Dup2 => Ok(Value::Tuple(vec![value.clone(), value])),
-            Builtin::Dup3 => Ok(Value::Tuple(vec![value.clone(), value.clone(), value])),
-            Builtin::Print => {
-                println!("{}", &value);
+            Builtin::Not => {
+                let inv = !value.to_bool();
+                Ok(Value::Bool(inv))
+            }
+            Builtin::Dup2 => {
+                let pair = vec![value.clone(), value];
+                Ok(Value::Tuple(pair))
+            }
+            Builtin::Dup3 => {
+                let triple = vec![value.clone(), value.clone(), value];
+                Ok(Value::Tuple(triple))
+            }
+            Builtin::Write => {
+                // FIXME: this should be write insead,
+                // but we have no \n yet.
+                writeln!(stdout(), "{}", &value)?;
                 Ok(value)
             }
             Builtin::Read => {
                 let mut buf = String::new();
-                stdin().read_line(&mut buf);
+                stdin().read_line(&mut buf)?;
                 Ok(Value::Str(buf))
-            }
-        }
-    }
-
-    /// Run a machine statement, corresponds to one step in the REPL.
-    pub fn run_statement(&self, stmt: &mut Statement) -> Result<Option<Value>> {
-        match stmt {
-            Statement::Let(names, stream) => {
-                if names.len() == 1 {
-                    self.streams
-                        .try_borrow_mut()
-                        .map(|mut ss| ss.insert(names.get(0).unwrap().clone(), stream.clone()))
-                        .with_context(|| format!("Unable to access streams"))?;
-                } else {
-                    for (index, name) in names.iter().enumerate() {
-                        let stream = Stream::Unzip(Box::new(stream.clone()), index);
-                        self.streams
-                            .try_borrow_mut()
-                            .map(|mut ss| ss.insert(name.clone(), stream))
-                            .with_context(|| format!("Unable to access streams"))?;
-                    }
-                }
-                Ok(None)
-            }
-            Statement::Consume(stream) => Ok(Some(self.advance_stream(stream)?)),
-        }
-    }
-
-    /// Perform one step of user-supplied machine evaluation.
-    pub fn run_defined_machine(
-        &self,
-        body: &mut [Statement],
-        result: &mut Stream,
-        value: Value,
-    ) -> Result<Value> {
-        self.streams
-            .borrow_mut()
-            .insert("input".to_string(), Stream::Const(value));
-
-        for mut stmt in body {
-            self.run_statement(stmt);
-        }
-
-        self.advance_stream(result)
-    }
-
-    /// Perform one step of a machine's evaluation.
-    pub fn run_machine(&self, machine: &mut Machine, value: Value) -> Result<Value> {
-        match machine {
-            Machine::Var(var) => {
-                let mut machines = self.machines.borrow_mut();
-
-                info!("[EVAL] about to pull machine `{}` from the factory.", var);
-                info!("[EVAL] factory machines: {:#?}", machines);
-
-                self.run_machine(
-                    machines
-                        .get_mut(var)
-                        .ok_or(anyhow!("Undefined fantastic machine: {}", var))?,
-                    value,
-                )
-            }
-            Machine::Builtin(builtin) => self.run_builtin_machine(builtin, value),
-            Machine::Defined(body, result) => self.run_defined_machine(body, result, value),
-        }
-    }
-
-    /// Get the next element from the stream.
-    pub fn advance_stream(&self, stream: &mut Stream) -> Result<Value> {
-        match stream {
-            Stream::Var(var) => {
-                let mut streams = self
-                    .streams
-                    .try_borrow_mut()
-                    .with_context(|| format!("Unable to access streams"))?;
-
-                info!("[EVAL] about to pull stream `{}` from the factory.", var);
-                info!("[EVAL] factory streams: {:#?}", streams);
-
-                let stream = streams
-                    .get_mut(var)
-                    .ok_or(anyhow!("Undefined fantastic stream: {}", var))?;
-
-                self.advance_stream(stream)
-            }
-            Stream::Const(value) => Ok(value.clone()),
-            Stream::Pipe(stream, machine) => {
-                let value = self.advance_stream(stream)?;
-                self.run_machine(machine, value)
-            }
-            Stream::Zip(streams) => streams
-                .iter_mut()
-                .map(|s| self.advance_stream(s))
-                .collect::<Result<Vec<_>>>()
-                .map(Value::Tuple),
-            Stream::Unzip(stream, index) => {
-                if let Value::Tuple(values) = self.advance_stream(stream)? {
-                    values
-                        .get(*index)
-                        .cloned()
-                        .ok_or(bail!("bad index in unzip: {}", *index))
-                } else {
-                    bail!("called unzip on non-tupled stream: {:?}", stream)
-                }
-            }
-            Stream::Limit(stream, limit) => {
-                if *limit == 0 {
-                    Ok(Value::Null)
-                } else {
-                    *limit -= 1;
-                    self.advance_stream(stream)
-                }
-            }
-            Stream::Cond(cond_stream, then_stream, else_stream) => {
-                if let Value::Bool(cond) = self.advance_stream(cond_stream)? {
-                    if cond {
-                        self.advance_stream(then_stream)
-                    } else {
-                        self.advance_stream(else_stream)
-                    }
-                } else {
-                    bail!("non-bool value in conditional")
-                }
             }
         }
     }

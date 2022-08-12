@@ -1,0 +1,18 @@
+machine Divides {
+    let x, divisor = it;
+    (((x, divisor) -> Mod), 0) -> Eq
+}
+
+machine FizzBuzz {
+    let fifteen = (!it, 15) -> Divides;
+    let five    = (!it,  5) -> Divides;
+    let three   = (!it,  3) -> Divides;
+
+    fifteen
+        ? (it, "FizzBuzz")
+        : five
+            ? (it, "Buzz")
+            : three
+                ? (it, "Fizz")
+                : it
+}

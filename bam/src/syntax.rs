@@ -15,32 +15,30 @@ pub enum Statement {
     Let(Vec<String>, Stream), // let x, y = s;
     Consume(Stream),          // s;
 }
-// Id = input
-// Five = 5
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stream {
-    // NOTE: just parse this as Var("input")
-    // Input,                        // input
     Var(String),                                 // x
     Const(Value),                                // v
     Pipe(Box<Stream>, Box<Machine>),             // s -> m
     Zip(Vec<Stream>),                            // s₁ , .. , sₙ
     Cond(Box<Stream>, Box<Stream>, Box<Stream>), // s₁ ? s₂ : s₃
-    Limit(Box<Stream>, usize),                   // s{n}
+    Take(Box<Stream>, usize),                    // s{n}
+    /// Read a value from the underlying stream
+    /// without consuming it.
+    Peek(Box<Stream>), // !s
+}
 
-    /// Only generated during evaluation.
-    /// Contains the original stream to unzip,
-    /// and the index with which to project.
-    Unzip(Box<Stream>, usize), // let x, y = s
+impl Default for Stream {
+    fn default() -> Self {
+        Stream::Const(Value::Null)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Machine {
     Var(String),
     Builtin(Builtin),
-    /// Only generated during evaluation.
-    Defined(Vec<Statement>, Stream),
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
@@ -60,8 +58,8 @@ pub enum Builtin {
     Not,
     Dup2,
     Dup3,
-    Print,
-    Read
+    Write,
+    Read,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -73,6 +71,12 @@ pub enum Value {
     Str(String),
     Bool(bool),
     Tuple(Vec<Value>),
+}
+
+impl Default for Value {
+    fn default() -> Self {
+        Self::Null
+    }
 }
 
 impl fmt::Display for Value {
@@ -89,7 +93,7 @@ impl fmt::Display for Value {
                 values
                     .iter()
                     .map(|s| format!("{s}"))
-                    .reduce(|acc, val| acc + val.as_str())
+                    .reduce(|acc, val| (acc + ", " + val.as_str()))
                     .unwrap_or_else(|| "".to_string())
             ),
         }

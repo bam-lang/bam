@@ -1,10 +1,8 @@
-use crate::{hashmap, Span};
+use crate::hashmap;
 use chumsky::{
     error::Simple,
     prelude::*,
-    primitive::*,
-    recovery, select,
-    text::{self, ident, int, keyword, TextParser},
+    text::{self, ident, keyword, TextParser},
     Parser,
 };
 use lazy_static::lazy_static;
@@ -22,6 +20,7 @@ lazy_static! {
         ":" => Token::Colon,
         ";" => Token::Semicolon,
         "->" => Token::Pipe,
+        "!" => Token::Bang,
         "let" => Token::Let,
         "machine" => Token::Machine,
         "null" => Token::Null
@@ -46,7 +45,8 @@ pub enum Token {
     Semicolon,
     Pipe,
     Machine,
-    Null
+    Null,
+    Bang,
 }
 
 impl Display for Token {
@@ -77,7 +77,7 @@ pub struct LexerBuilder;
 impl LexerBuilder {
     #[inline]
     pub fn build() -> impl Parser<char, Vec<Token>, Error = Simple<char>> {
-        let comment = just("//")
+        let comment = just("--")
             .ignore_then(take_until(just("\n")).ignored())
             .padded()
             .repeated()
@@ -131,6 +131,7 @@ impl LexerBuilder {
             just(":").to(Token::Colon),
             just(";").to(Token::Semicolon),
             just("->").to(Token::Pipe),
+            just("!").to(Token::Bang),
         ))
     }
 

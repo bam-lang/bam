@@ -116,7 +116,7 @@ lazy_static! {
                 output: Type::Tuple(vec![Type::TyVar(0), Type::TyVar(0), Type::TyVar(0)])
             }
         },
-        Builtin::Print => { // forall a. a -> a
+        Builtin::Write => { // forall a. a -> a
             MachineType {
                 var_count: 1,
                 input: Type::TyVar(0),
@@ -315,7 +315,7 @@ fn infer_stream(
     match stream {
         Stream::Var(name) => match local_env.var_types.get(name) {
             Some(ty) => Ok(ty.clone()),
-            None => Err(TypeError::UnboundVariable(name.clone()))
+            None => Err(TypeError::UnboundVariable(name.clone())),
         },
         Stream::Const(Value::Null) => {
             // 'null' can have any type, so we treat it like 'forall a. a'
@@ -338,9 +338,6 @@ fn infer_stream(
                 },
                 Machine::Builtin(builtin) => Ok(get_builtin_ty(builtin)
                     .unwrap_or_else(|| panic!("{builtin:#?} not found in BUILTIN_MAP"))),
-                Machine::Defined(_, _) => panic!(
-                    "infer_stream: Machine::Defined should not be able to appear in source files"
-                ),
             }?;
             let machine_ty = instantiate(local_env, machine_ty);
 
@@ -354,7 +351,7 @@ fn infer_stream(
             let stream_tys = streams
                 .iter()
                 .map(|stream| infer_stream(global_env, local_env, stream))
-                .collect::<Result<Vec<_>,_>>()?;
+                .collect::<Result<Vec<_>, _>>()?;
             Ok(Type::Tuple(stream_tys))
         }
 
@@ -375,10 +372,8 @@ fn infer_stream(
             // equivalent, it doesn't matter which one we return here. We arbitrarily pick the 'then' branch.
             Ok(then_ty)
         }
-        Stream::Limit(stream, _) => infer_stream(global_env, local_env, stream),
-
-        Stream::Unzip(_, _) => {
-            panic!("infer_stream: Stream::Unzip should not be able to appear in source files")
+        Stream::Take(stream, _) | Stream::Peek(stream) => {
+            infer_stream(global_env, local_env, stream)
         }
     }
 }
@@ -451,12 +446,10 @@ fn replace_unif_var(ty: Type, var: usize, to_replace: &Type) -> Type {
 fn apply_substitution(subst: &HashMap<usize, Type>, ty: Type) -> Type {
     match ty {
         Type::Num | Type::Bool | Type::String | Type::TyVar(_) => ty,
-        Type::UnifVar(var) => {
-            match subst.get(&var) {
-                None => Type::UnifVar(var),
-                Some(ty) => apply_substitution(subst, ty.clone())
-            }
-        }
+        Type::UnifVar(var) => match subst.get(&var) {
+            None => Type::UnifVar(var),
+            Some(ty) => apply_substitution(subst, ty.clone()),
+        },
         Type::Tuple(tys) => Type::Tuple(
             tys.into_iter()
                 .map(|ty| apply_substitution(subst, ty))
@@ -535,21 +528,15 @@ fn generalize(subst: &HashMap<usize, Type>, machine_ty: MachineType) -> MachineT
 
     let input = apply_substitution(subst, machine_ty.input);
 
-    let input = free_vars
-        .iter()
-        .enumerate()
-        .rfold(input, |ty, (i, var)| {
-            replace_unif_var(ty, *var, &Type::TyVar(i))
-        });
+    let input = free_vars.iter().enumerate().rfold(input, |ty, (i, var)| {
+        replace_unif_var(ty, *var, &Type::TyVar(i))
+    });
 
     let output = apply_substitution(subst, machine_ty.output);
 
-    let output = free_vars
-        .iter()
-        .enumerate()
-        .rfold(output, |ty, (i, var)| {
-            replace_unif_var(ty, *var, &Type::TyVar(i))
-        });
+    let output = free_vars.iter().enumerate().rfold(output, |ty, (i, var)| {
+        replace_unif_var(ty, *var, &Type::TyVar(i))
+    });
 
     MachineType {
         var_count: free_vars.len(),
